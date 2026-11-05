@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>垂直藝術裁切器</title>
+<style>
+:root { --bg:#1c1c1e; --fg:#f2f2f2; --muted:#9a9aa2; --card:#2c2c2e; --accent:#0a84ff; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:16px; }
+h1 { font-size:1.4rem; margin:0 0 4px; }
+.hint { color:var(--muted); font-size:0.85rem; margin-bottom:16px; }
+.card { background:var(--card); border-radius:12px; padding:14px; margin-bottom:12px; }
+label { display:block; font-size:0.85rem; margin:8px 0 4px; color:var(--muted); }
+input[type=file], select, input[type=number], button { width:100%; padding:10px; border-radius:8px; border:none; background:#3a3a3c; color:var(--fg); font-size:1rem; }
+button.primary { background:var(--accent); font-weight:600; margin-top:8px; }
+button.secondary { background:#3a3a3c; margin-top:6px; }
+.row { display:flex; gap:8px; }
+.row > * { flex:1; }
+#preview { max-width:100%; border-radius:8px; margin-top:10px; display:none; }
+#results { display:flex; flex-wrap:wrap; gap:10px; }
+.result-item { width:calc(50% - 5px); text-align:center; }
+.result-item img { width:100%; border-radius:6px; }
+@media (min-width:700px) { .result-item { width:calc(33.33% - 7px); } }
+</style>
+</head>
+<body>
+<h1>垂直藝術裁切器</h1>
+<div class="hint">純前端，手機/電腦皆可。圖片不會上傳到伺服器。</div>
+
+<div class="card">
+  <label>選擇圖片（可多選）</label>
+  <input type="file" id="files" accept="image/*" multiple>
+</div>
+
+<div class="card">
+  <label>比例</label>
+  <select id="ratio">
+    <option value="9/16">9:16 手機</option>
+    <option value="9/19.5">9:19.5 全面屏</option>
+    <option value="2/3">2:3</option>
+    <option value="3/4">3:4</option>
+    <option value="1/1">1:1</option>
+    <option value="custom">自訂</option>
+  </select>
+  <div class="row" id="customRow" style="display:none;margin-top:8px">
+    <div><label>寬</label><input type="number" id="cw" value="1080"></div>
+    <div><label>高</label><input type="number" id="ch" value="1920"></div>
+  </div>
+</div>
+
+<div class="card">
+  <label>裁切模式</label>
+  <select id="mode">
+    <option value="smart">智慧（細節最多）</option>
+    <option value="center">置中</option>
+    <option value="top">靠上</option>
+    <option value="bottom">靠下</option>
+  </select>
+  <label>風格強化</label>
+  <select id="style">
+    <option value="none">無</option>
+    <option value="enhanced">提高對比與飽和</option>
+  </select>
+  <button class="primary" id="go">開始裁切</button>
+</div>
+
+<div id="results"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+$('#ratio').onchange = () => {
+  $('#customRow').style.display = $('#ratio').value === 'custom' ? 'flex' : 'none';
+};
+
+function getTargetSize() {
+  const r = $('#ratio').value;
+  if (r === 'custom') return [+$('#cw').value, +$('#ch').value];
+  const [a,b] = r.split('/').map(Number);
+  const w = 1080;
+  return [w, Math.round(w * b / a)];
+}
+
+function variance(canvas) {
+  const ctx = canvas.getContext('2d');
+  const {data} = ctx.getImageData(0,0,canvas.width,canvas.height);
+  let sum=0, sum2=0, n=0;
+  for (let i=0; i<data.length; i+=16) { // sample
+    const g = data[i]*0.3 + data[i+1]*0.59 + data[i+2]*0.11;
+    sum += g; sum2 += g*g; n++;
+  }
+  if (!n) return 0;
+  const mean = sum/n;
+  return sum2/n - mean*mean;
+}
+
+function smartCrop(img, tw, th, mode) {
+  const w = img.width, h = img.height;
+  const tr = tw/th;
+  const sr = w/h;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  if (Math.abs(sr - tr) < 0.02) return {x:0,y:0,w,h};
+
+  if (sr > tr) {
+    // crop width
+    const nw = Math.round(h * tr);
+    let x = Math.round((w - nw)/2);
+    if (mode === 'smart') {
+      let best = -1, bestX = x;
+      const step = Math.max(1, Math.floor((w-nw)/8));
+      for (let left=0; left<=w-nw; left+=step) {
+        canvas.width = 64; canvas.height = 64;
+        ctx.drawImage(img, left, 0, nw, h, 0, 0, 64, 64);
+        const v = variance(canvas);
+        if (v > best) { best = v; bestX = left; }
+      }
+      x = bestX;
+    }
+    return {x, y:0, w:nw, h};
+  } else {
+    // crop height
+    const nh = Math.round(w / tr);
+    let y = Math.round((h - nh)/2);
+    if (mode === 'top') y = 0;
+    if (mode === 'bottom') y = h - nh;
+    if (mode === 'smart') {
+      let best = -1, bestY = y;
+      const step = Math.max(1, Math.floor((h-nh)/8));
+      for (let top=0; top<=h-nh; top+=step) {
+        canvas.width = 64; canvas.height = 64;
+        ctx.drawImage(img, 0, top, w, nh, 0, 0, 64, 64);
+        const v = variance(canvas);
+        if (v > best) { best = v; bestY = top; }
+      }
+      y = bestY;
+    }
+    return {x:0, y, w, h:nh};
+  }
+}
+
+function applyStyle(ctx, w, h, style) {
+  if (style === 'none') return;
+  const id = ctx.getImageData(0,0,w,h);
+  const d = id.data;
+  for (let i=0; i<d.length; i+=4) {
+    // simple contrast + saturation boost
+    let r=d[i], g=d[i+1], b=d[i+2];
+    r = (r-128)*1.2 + 128;
+    g = (g-128)*1.2 + 128;
+    b = (b-128)*1.2 + 128;
+    const avg = (r+g+b)/3;
+    r = avg + (r-avg)*1.25;
+    g = avg + (g-avg)*1.25;
+    b = avg + (b-avg)*1.25;
+    d[i] = Math.max(0,Math.min(255,r));
+    d[i+1] = Math.max(0,Math.min(255,g));
+    d[i+2] = Math.max(0,Math.min(255,b));
+  }
+  ctx.putImageData(id,0,0);
+}
+
+$('#go').onclick = async () => {
+  const files = $('#files').files;
+  if (!files.length) return alert('請先選擇圖片');
+  const [tw, th] = getTargetSize();
+  const mode = $('#mode').value;
+  const style = $('#style').value;
+  const results = $('#results');
+  results.innerHTML = '';
+
+  for (const file of files) {
+    const img = new Image();
+    img.src = URL.createObjectURL(file);
+    await img.decode();
+
+    const box = smartCrop(img, tw, th, mode);
+    const canvas = document.createElement('canvas');
+    canvas.width = tw; canvas.height = th;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, box.x, box.y, box.w, box.h, 0, 0, tw, th);
+    applyStyle(ctx, tw, th, style);
+
+    const url = canvas.toDataURL('image/jpeg', 0.92);
+    const div = document.createElement('div');
+    div.className = 'result-item';
+    div.innerHTML = `<img src="${url}"><br><a href="${url}" download="${file.name.replace(/\.[^.]+$/,'')}_crop.jpg">下載</a>`;
+    results.appendChild(div);
+    URL.revokeObjectURL(img.src);
+  }
+};
+</script>
+</body>
+</html>
